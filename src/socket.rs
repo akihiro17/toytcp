@@ -23,6 +23,8 @@ pub struct Socket {
     pub recv_param: RecvParam,
     pub status: TcpStatus,
     pub sender: TransportSender,
+    pub connected_connection_queue: VecDeque<SockID>,
+    pub listening_socket: Option<SockID>,
 }
 
 #[derive(Clone, Debug)]
@@ -101,6 +103,8 @@ impl Socket {
                 tail: 0,
             },
             status,
+            connected_connection_queue: VecDeque::new(),
+            listening_socket: None,
             sender,
         })
     }
