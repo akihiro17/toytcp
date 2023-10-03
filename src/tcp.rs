@@ -55,7 +55,54 @@ impl TCP {
         std::thread::spawn(move || {
             cloned_tcp.receive_handler().unwrap();
         });
+        let cloned_tcp = tcp.clone();
+        std::thread::spawn(move || {
+            cloned_tcp.timer();
+        });
         tcp
+    }
+
+    fn timer(&self) {
+        dbg!("begin timer thread");
+        loop {
+            let mut table = self.sockets.write().unwrap();
+            for (_, socket) in table.iter_mut() {
+                while let Some(mut item) = socket.retransmission_queue.pop_front() {
+                    // ackされたセグメントを除去
+                    if socket.send_param.unacked_seq > item.packet.get_seq() {
+                        dbg!("successfully acked", item.packet.get_seq());
+                        continue;
+                    }
+
+                    // タイムアウトを確認する
+                    if item.latest_transmission_time.elapsed().unwrap()
+                        < Duration::from_secs(RETRANSMITTION_TIMEOUT)
+                    {
+                        // queueにセグメンは時刻の昇順に入っている前提
+                        socket.retransmission_queue.push_front(item);
+                        break;
+                    }
+
+                    // ackされてなければ再送する
+                    if item.transmission_count < MAX_TRANSMITTION {
+                        dbg!("retransmit");
+                        socket
+                            .sender
+                            .send_to(item.packet.clone(), IpAddr::V4(socket.remote_addr))
+                            .context("failed to retransmit")
+                            .unwrap();
+                        item.transmission_count += 1;
+                        item.latest_transmission_time = SystemTime::now();
+                        socket.retransmission_queue.push_back(item);
+                        break;
+                    } else {
+                        dbg!("reached MAX_TRANSMITTION");
+                    }
+                }
+            }
+            drop(table);
+            thread::sleep(Duration::from_millis(100));
+        }
     }
 
     fn select_unused_port(&self, rng: &mut ThreadRng) -> Result<u16> {
@@ -130,12 +177,45 @@ impl TCP {
                 TcpStatus::SynSent => self.synsent_handler(socket, &packet),
                 TcpStatus::Listen => self.listen_handler(table, sock_id, &packet, remote_addr),
                 TcpStatus::SynRcvd => self.synrcvd_handler(table, sock_id, &packet),
+                TcpStatus::Established => self.established_handler(socket, &packet),
                 _ => {
                     dbg!("not implemented");
                     Ok(())
                 }
             } {
                 dbg!(error);
+            }
+        }
+    }
+
+    fn established_handler(&self, socket: &mut Socket, packet: &TCPPacket) -> Result<()> {
+        dbg!("established handler");
+        if socket.send_param.unacked_seq < packet.get_ack()
+            && packet.get_ack() <= socket.send_param.next
+        {
+            socket.send_param.unacked_seq = packet.get_ack();
+            self.delete_acked_segment_from_retransmission_queue(socket);
+        } else if socket.send_param.next < packet.get_ack() {
+            // 未送信セグメントに対するACKは破棄する
+            return Ok(());
+        }
+        if packet.get_flag() & tcpflags::ACK == 0 {
+            // ACKが立っていないパケットは破棄する
+            return Ok(());
+        }
+        Ok(())
+    }
+
+    fn delete_acked_segment_from_retransmission_queue(&self, socket: &mut Socket) {
+        dbg!("ack accept", socket.send_param.unacked_seq);
+        while let Some(item) = socket.retransmission_queue.pop_front() {
+            if socket.send_param.unacked_seq > item.packet.get_seq() {
+                // すでにackさているので削除する
+                dbg!("successfully acked", item.packet.get_seq());
+                self.publish_event(socket.get_sock_id(), TCPEventKind::Acked);
+            } else {
+                socket.retransmission_queue.push_front(item);
+                break;
             }
         }
     }
@@ -294,6 +374,26 @@ impl TCP {
             .connected_connection_queue
             .pop_front()
             .context("no conntected socket")?)
+    }
+
+    pub fn send(&self, sock_id: SockID, buffer: &[u8]) -> Result<()> {
+        let mut cursor = 0;
+        while cursor < buffer.len() {
+            let mut table = self.sockets.write().unwrap();
+            let socket = table
+                .get_mut(&sock_id)
+                .context(format!("no such socket: {:?}", sock_id))?;
+            let send_size = cmp::min(MSS, buffer.len() - cursor);
+            socket.send_tcp_packet(
+                socket.send_param.next,
+                socket.recv_param.next,
+                tcpflags::ACK,
+                &buffer[cursor..cursor + send_size],
+            )?;
+            cursor += send_size;
+            socket.send_param.next += send_size as u32;
+        }
+        Ok(())
     }
 
     fn wait_event(&self, sock_id: SockID, kind: TCPEventKind) {

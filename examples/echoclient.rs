@@ -13,6 +13,11 @@ fn main() -> Result<()> {
 
 fn echo_client(addr: Ipv4Addr, port: u16) -> Result<()> {
     let tcp = TCP::new();
-    let _ = tcp.connect(addr, port)?;
-    Ok(())
+    let sock_id = tcp.connect(addr, port)?;
+    loop {
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+
+        tcp.send(sock_id, input.as_bytes())?;
+    }
 }

@@ -25,6 +25,7 @@ pub struct Socket {
     pub sender: TransportSender,
     pub connected_connection_queue: VecDeque<SockID>,
     pub listening_socket: Option<SockID>,
+    pub retransmission_queue: VecDeque<RetransmissionQueueEntry>,
 }
 
 #[derive(Clone, Debug)]
@@ -106,6 +107,7 @@ impl Socket {
             connected_connection_queue: VecDeque::new(),
             listening_socket: None,
             sender,
+            retransmission_queue: VecDeque::new(),
         })
     }
 
@@ -140,6 +142,12 @@ impl Socket {
             .context(format!("failed to send: \n{:?}", tcp_packet))?;
 
         dbg!("sent", &tcp_packet);
+        if payload.is_empty() && tcp_packet.get_flag() == tcpflags::ACK {
+            return Ok(sent_size);
+        }
+        self.retransmission_queue
+            .push_back(RetransmissionQueueEntry::new(tcp_packet));
+
         Ok(sent_size)
     }
 
@@ -150,5 +158,22 @@ impl Socket {
             self.local_port,
             self.remote_port,
         )
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct RetransmissionQueueEntry {
+    pub packet: TCPPacket,
+    pub latest_transmission_time: SystemTime,
+    pub transmission_count: u8,
+}
+
+impl RetransmissionQueueEntry {
+    fn new(packet: TCPPacket) -> Self {
+        Self {
+            packet,
+            latest_transmission_time: SystemTime::now(),
+            transmission_count: 1,
+        }
     }
 }
