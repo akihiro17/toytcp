@@ -14,6 +14,11 @@ fn main() -> Result<()> {
 fn echo_client(addr: Ipv4Addr, port: u16) -> Result<()> {
     let tcp = TCP::new();
     let sock_id = tcp.connect(addr, port)?;
+    let cloned_tcp = tcp.clone();
+    ctrlc::set_handler(move || {
+        cloned_tcp.close(sock_id).unwrap();
+        std::process::exit(0);
+    })?;
     loop {
         let mut input = String::new();
         io::stdin().read_line(&mut input)?;
