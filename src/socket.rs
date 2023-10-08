@@ -25,6 +25,7 @@ pub struct Socket {
     pub sender: TransportSender,
     pub connected_connection_queue: VecDeque<SockID>,
     pub listening_socket: Option<SockID>,
+    pub recv_buffer: Vec<u8>,
     pub retransmission_queue: VecDeque<RetransmissionQueueEntry>,
 }
 
@@ -107,6 +108,7 @@ impl Socket {
             connected_connection_queue: VecDeque::new(),
             listening_socket: None,
             sender,
+            recv_buffer: vec![0; SOCKET_BUFFER_SIZE],
             retransmission_queue: VecDeque::new(),
         })
     }
