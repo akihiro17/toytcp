@@ -5,6 +5,7 @@ use anyhow::{Context, Result};
 use pnet::packet::{ip::IpNextHeaderProtocols, tcp::TcpPacket, Packet};
 use pnet::transport::{self, TransportChannelType};
 use rand::{rngs::ThreadRng, Rng};
+use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
 use std::process::Command;
@@ -288,12 +289,21 @@ impl TCP {
         let copy_size = cmp::min(packet.payload().len(), socket.recv_buffer.len() - offset);
         socket.recv_buffer[offset..offset + copy_size]
             .copy_from_slice(&packet.payload()[..copy_size]);
-        socket.recv_param.tail =
-            cmp::max(socket.recv_param.tail, packet.get_seq() + copy_size as u32);
 
         if packet.get_seq() == socket.recv_param.next {
-            socket.recv_param.next = socket.recv_param.tail;
-            socket.recv_param.window -= (socket.recv_param.tail - packet.get_seq()) as u16;
+            socket.recv_param.next = packet.get_seq() + copy_size as u32;
+            while let Some(Reverse(t)) = socket.recv_param.tails.pop() {
+                if socket.recv_param.next == t.0 {
+                    socket.recv_param.next = t.1;
+                } else {
+                    socket.recv_param.tails.push(Reverse(t));
+                    break;
+                }
+            }
+            socket.recv_param.window -= (socket.recv_param.next - packet.get_seq()) as u16;
+        } else {
+            let p = (packet.get_seq() as u32, packet.get_seq() + copy_size as u32);
+            socket.recv_param.tails.push(Reverse(p));
         }
         dbg!(
             "process payload",
@@ -424,7 +434,7 @@ impl TCP {
             && socket.send_param.unacked_seq <= packet.get_ack()
             && packet.get_ack() <= socket.send_param.next
         {
-            socket.recv_param.next = packet.get_seq();
+            // socket.recv_param.next = packet.get_seq();
             socket.send_param.unacked_seq = packet.get_ack();
             socket.status = TcpStatus::Established;
             dbg!("status: synrcvd -> ", &socket.status);

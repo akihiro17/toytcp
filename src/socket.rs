@@ -4,7 +4,8 @@ use anyhow::{Context, Result};
 use pnet::packet::{ip::IpNextHeaderProtocols, Packet};
 use pnet::transport::{self, TransportChannelType, TransportProtocol, TransportSender};
 use pnet::util;
-use std::collections::VecDeque;
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, VecDeque};
 use std::fmt::{self, Display};
 use std::net::{IpAddr, Ipv4Addr};
 use std::time::SystemTime;
@@ -37,12 +38,14 @@ pub struct SendParam {
     pub initial_seq: u32, // 初期受信seq
 }
 
+type P = (u32, u32);
+
 #[derive(Clone, Debug)]
 pub struct RecvParam {
     pub next: u32,        // RCV.NXT
     pub window: u16,      // window size
     pub initial_seq: u32, // 初期受信seq
-    pub tail: u32,        // 受信seqの最後尾
+    pub tails: BinaryHeap<Reverse<P>>,
 }
 
 #[derive(PartialEq, Eq, Debug, Clone)]
@@ -102,7 +105,7 @@ impl Socket {
                 next: 0,
                 window: SOCKET_BUFFER_SIZE as u16,
                 initial_seq: 0,
-                tail: 0,
+                tails: BinaryHeap::new(),
             },
             status,
             connected_connection_queue: VecDeque::new(),
